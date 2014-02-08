@@ -1,0 +1,85 @@
+Notes about the RDing/PCSensor USB pedal
+
+Determined via USB sniffing (Wireshark) of the FootSwitch v5.0
+software in a Windows XP (32-bit) VMWare virtual machine, on a Linux
+host.  VMware requires usb.generic.allowHID = "TRUE" in the VMX file,
+per kb.vmware.com/kb/1033435.
+
+Commands are sent as a control transfer, with a request type of 0x21,
+a request of 0x9, a wvalue of 0x200, and an index of 1.
+The index corresponds to the endpoint we use. (Endpoint 1)
+Packets are 8 bytes in size.
+
+Command packets look like:
+0x01 command_num size pedal_num
+The last 4 bytes are always 0.
+pedal_num is 0 for commands that aren't pedal-specific
+pedal_num is not 0-indexed, it is a number (1..3)
+For single-pedal devices, pedal #2 is the pedal
+
+Commands:
+0x80: Wipe the memory.  This must be sent before writing any pedal config.
+      size is ignored here, pedal_num is 0x0
+0x81: Write a pedal config.  size is 8, except for strings which may be longer (or shorter).  pedal_num is required.
+      Interestingly enough, if you write without wiping the memory, it does a bitwise AND operation on each of the bytes.
+      Follow this with the data, in 8-byte packets.
+0x82: Read pedal data.  Size is 8, though it does not seem to matter, as in 0x80.  pedal_num is required.
+0x83: Ask the device to identify itself.  Size is ignored.  Always responds with 2 packets.
+
+After the device is wiped, a 200ms pause is required.
+A 50 ms pause after each write (command + data) of a pedal
+
+Reading is done as an interrupt read from the 0x82 endpoint, 8 bytes at a time.
+
+the .reset() with libusb 0.x is flaky if the machine has been suspended.  Unclear if this is a device bug or a libusb bug.
+
+Data packets:
+
+The first byte of a data packet is always the size of the data.  Second byte is the type of input the device will generate.  For strings, bytes 3:n are the contents of the string.  if n < 8, it's padded with nulls.
+
+KB/Mouse packets look like this
+SIZE  TYPE_FLAGS  MOD_FLAGS  KEY  MOUSE_BUTTONS  MOUSE_X  MOUSE_Y  MOUSE_WHEEL
+
+SIZE is always 8.
+TYPE_FLAGS:
+  0x00  not present (for pedals 1 and 3 for single-pedal devices)
+  0x01  key press
+  0x02  mouse movement or click
+  0x04  string
+
+MOD_FLAGS
+  0x00 none
+  0x01 ctrl
+  0x02 shift
+  0x04 alt
+  0x08 super (windows/command key)
+
+KEY
+  The USB HID scan code of the key
+
+MOUSE_BUTTONS
+  0x01 left
+  0x02 right
+  0x04 middle
+
+X/Y/WHEEL: The unsigned char value is converted into a signed
+  char.  Negative values indicate Right (on the X axis), Up (on the
+  Y axis), and "back" (roll wheel towards user) on the wheel.  You
+  have a maximum of 127/128 pixels at a time in any direction. Note
+  that mouse wheel forwards and backwards are mapped to buttons 4 and
+  5 respectively in X11.
+
+Mouse and keyboard commands can be sent at the same time by ORing the
+flags.  You can inhibit repeating of a key press by ORing the type
+with 0x80.  Even when a key press supported repeat (holding down),
+only one mouse event will be sent.
+
+When dealing with strings, the keys are remapped at 0x80 + their value
+for their "uppercase" versions (that is, with Shift pressed).  When
+dealing with keypresses, the value is always the key's scan code.  So
+if you want a single keypress of capital 'B', use 'b' and set 'Shift'
+as a modified.
+
+It is possible to set the modifier keys themselves (0xe0 through 0xe7)
+as the key press event, and thus take advantage of the repeating
+factor to, for example, hold down Ctrl_L while the pedal is pressed.
